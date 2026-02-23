@@ -1,5 +1,6 @@
 #include "photo_manager.h"
 
+#include <atomic>
 #include <cstdio>
 #include <ctime>
 #include <random>
@@ -30,7 +31,11 @@ void PhotoManager::ensure_directory()
 
 std::string PhotoManager::generate_filename() const
 {
-    // 使用时间戳 + 随机数生成唯一文件名
+    // 使用时间戳 + 全局原子序列号生成唯一文件名
+    // BUG-002 修复：毫秒精度在并发场景下会碰撞，加入序列号保证唯一性
+    static std::atomic<int> seq{0};
+    int n = seq.fetch_add(1, std::memory_order_relaxed);
+
     auto now = std::chrono::system_clock::now();
     auto time_t = std::chrono::system_clock::to_time_t(now);
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -39,7 +44,7 @@ std::string PhotoManager::generate_filename() const
     char buf[64];
     std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", std::localtime(&time_t));
 
-    return std::string(buf) + "_" + std::to_string(ms);
+    return std::string(buf) + "_" + std::to_string(ms) + "_" + std::to_string(n);
 }
 
 std::string PhotoManager::save_raw(const unsigned char* data, unsigned int size)
@@ -61,6 +66,12 @@ std::string PhotoManager::save_raw(const unsigned char* data, unsigned int size)
 
 std::string PhotoManager::save_mat(const cv::Mat& image)
 {
+    // BUG-001 修复：cv::imwrite 对空 Mat 会抛出断言异常而非返回 false，需提前校验
+    if (image.empty()) {
+        fprintf(stderr, "[PhotoManager] 图像为空，跳过保存\n");
+        return "";
+    }
+
     std::string filename = photo_dir_ + "/photo_" + generate_filename() + ".jpg";
 
     if (!cv::imwrite(filename, image)) {
