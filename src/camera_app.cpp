@@ -190,6 +190,16 @@ void CameraApp::handle_capture()
 
     if (!path.empty()) {
         printf("拍照成功: %s\n", path.c_str());
+
+        // 拍照后立即将照片显示到 framebuffer（绕过 500ms 预览门控）
+        // 产品语义：用户按快门 → 屏幕立刻呈现这张照片，类似数码相机回显
+        if (display_->is_open()) {
+            std::lock_guard<std::mutex> lock(display_mutex_);
+            display_->display(frame);
+            last_frame_hash_ = 0;  // 重置哈希，下次预览必须刷新（照片内容已覆盖屏幕）
+            last_preview_ts_ = std::chrono::steady_clock::now();  // 重置计时器
+            printf("照片已显示到屏幕\n");
+        }
     }
 }
 
@@ -261,6 +271,13 @@ void CameraApp::on_frame_processed(const cv::Mat& frame)
 {
     if (!display_->is_open() || frame.empty()) return;
 
+    // 低帧率预览：每 500ms 最多刷新一次 framebuffer（2fps 预览）
+    // 节省 framebuffer memcpy 的 sys% CPU 开销（约减少 15x 写入次数）
+    auto now = std::chrono::steady_clock::now();
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_preview_ts_).count() < kPreviewIntervalMs)
+        return;
+
     // 静止帧检测：对帧内容做快速哈希，相同则跳过 framebuffer 写入
     // 采样：每隔 8 行取该行中央 3 个像素，计算滚动哈希
     uint64_t h = 0;
@@ -272,6 +289,7 @@ void CameraApp::on_frame_processed(const cv::Mat& frame)
     }
     if (h == last_frame_hash_) return;  // 内容未变，跳过写入
     last_frame_hash_ = h;
+    last_preview_ts_ = now;  // 更新时间戳，下次 500ms 后才再刷新
 
     std::unique_lock<std::mutex> lock(display_mutex_, std::try_to_lock);
     if (lock.owns_lock()) {

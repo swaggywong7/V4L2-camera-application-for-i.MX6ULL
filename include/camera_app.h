@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <atomic>
+#include <chrono>
 #include "v4l2_device.h"
 #include "frame_buffer.h"
 #include "capture_thread.h"
@@ -71,6 +72,11 @@ private:
 
     // 静止帧检测：上一帧的快速哈希值，相同则跳过 framebuffer 写入
     uint64_t last_frame_hash_ = 0;
+
+    // 预览帧率控制：每 500ms 最多写一次 framebuffer（2fps 预览节省 sys%）
+    // 拍照时绕过此限制，立即显示照片
+    std::chrono::steady_clock::time_point last_preview_ts_;
+    static constexpr long kPreviewIntervalMs = 500;
 };
 
 #endif // CAMERA_APP_H
