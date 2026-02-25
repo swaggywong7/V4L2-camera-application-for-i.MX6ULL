@@ -35,6 +35,7 @@ private:
     void handle_set_mode(int mode);
     void handle_list_photos();
     void handle_view_photo(int index);
+    void handle_benchmark();
     void print_help();
 
     // 回调：接收采集帧

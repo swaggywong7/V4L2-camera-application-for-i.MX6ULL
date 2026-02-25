@@ -31,19 +31,24 @@ public:
     void start();
     void stop();
 
+    // 纯采集模式：只做 DQBUF/QBUF，不解码不回调，用于诊断 CPU 瓶颈
+    void set_capture_only(bool v) { capture_only_.store(v); }
+    bool is_capture_only() const  { return capture_only_.load(); }
+
     bool is_running() const { return running_.load(); }
 
 private:
     // 线程主函数
     void capture_loop();
 
-    // MJPEG解码为cv::Mat
-    cv::Mat decode_mjpeg(const unsigned char* data, unsigned int size);
+    // 自动检测 MJPEG/YUYV 并解码为 BGR cv::Mat
+    cv::Mat decode_frame(const unsigned char* data, unsigned int size);
 
     V4L2Device& device_;            // 引用，不拥有设备
     std::thread thread_;
     std::atomic<bool> running_{false};
 
+    std::atomic<bool> capture_only_{false};
     std::mutex callback_mutex_;
     FrameCallback frame_callback_;
     ErrorCallback error_callback_;

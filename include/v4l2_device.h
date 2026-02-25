@@ -54,6 +54,9 @@ public:
 
     bool is_open() const { return fd_ >= 0; }
     int fd() const { return fd_; }
+    int width() const { return width_; }
+    int height() const { return height_; }
+    uint32_t pixel_format() const { return pixel_format_; }
 
 private:
     // 查询并验证设备能力
@@ -74,8 +77,12 @@ private:
     std::string device_path_;
     int fd_ = -1;
     bool streaming_ = false;
+    size_t image_size_ = 0;   // 单帧最大字节数，由 VIDIOC_S_FMT 返回
+    int width_ = 0;
+    int height_ = 0;
+    uint32_t pixel_format_ = 0;
 
-    // 用户空间映射缓冲区
+    // 用户空间缓冲区（USERPTR 模式，自行 malloc，无需 VIDIOC_QUERYBUF）
     char* user_buffers_[kBufferCount] = {};
     int buffer_lengths_[kBufferCount] = {};
     int buffer_count_ = 0;

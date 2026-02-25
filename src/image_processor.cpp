@@ -128,10 +128,10 @@ void ImageProcessor::submit_frame(const cv::Mat& frame)
 {
     {
         std::lock_guard<std::mutex> lock(frame_mutex_);
-        pending_frame_ = frame.clone();
+        pending_frame_ = frame;  // 引用计数 +1，零拷贝；process() 输出新 Mat 不修改 input
         has_new_frame_ = true;
     }
-    frame_cv_.notify_one();  // 通知消费者线程
+    frame_cv_.notify_one();
 }
 
 void ImageProcessor::set_output_callback(OutputCallback callback)

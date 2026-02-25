@@ -16,5 +16,5 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
-# 指向 armhf 版 OpenCV cmake 配置
-set(OpenCV_DIR /usr/lib/arm-linux-gnueabihf/cmake/opencv4)
+# 指向精简版静态 OpenCV cmake 配置
+set(OpenCV_DIR /home/swaggywong7/Documents/newproject/3rdparty/opencv/lib/cmake/opencv4)

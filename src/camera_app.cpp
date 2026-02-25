@@ -24,9 +24,19 @@ int CameraApp::run()
 {
     running_.store(true);
 
-    // 尝试打开framebuffer (非必须，失败不影响拍照功能)
-    if (display_->open() < 0) {
-        printf("[CameraApp] 警告: 无法打开framebuffer，将仅支持拍照功能\n");
+    // 依次尝试 fb0 / fb1，打印成功打开的设备
+    const char* fb_devs[] = {"/dev/fb1", "/dev/fb0", nullptr};
+    for (int i = 0; fb_devs[i] != nullptr; ++i) {
+        display_ = std::make_unique<FrameBuffer>(fb_devs[i]);
+        if (display_->open() == 0) {
+            printf("[CameraApp] Framebuffer 已打开: %s (%dx%d, %dbpp)\n",
+                   fb_devs[i], display_->width(), display_->height(), display_->bpp());
+            break;
+        }
+        printf("[CameraApp] %s 打开失败，尝试下一个...\n", fb_devs[i]);
+    }
+    if (!display_->is_open()) {
+        printf("[CameraApp] 警告: fb0/fb1 均无法打开，将仅支持拍照功能\n");
     }
 
     print_help();
@@ -76,6 +86,8 @@ int CameraApp::run()
                 catch (...) { printf("请输入有效数字，例如: view 0\n"); continue; }
             }
             handle_view_photo(idx);
+        } else if (line == "benchmark" || line == "b") {
+            handle_benchmark();
         } else if (line == "help" || line == "h") {
             print_help();
         } else if (line == "quit" || line == "q") {
@@ -215,19 +227,16 @@ void CameraApp::handle_view_photo(int index)
 
 void CameraApp::on_frame_captured(const cv::Mat& frame)
 {
-    // 缓存最新帧用于拍照
+    // cv::Mat 是引用计数的，直接赋值只增加引用计数，零内存拷贝
     {
         std::lock_guard<std::mutex> lock(frame_cache_mutex_);
-        cached_frame_ = frame.clone();
+        cached_frame_ = frame;
     }
 
     ProcessMode mode = processor_->get_mode();
-
     if (mode != ProcessMode::None) {
-        // 提交给处理线程
         processor_->submit_frame(frame);
     } else {
-        // 直接显示
         on_frame_processed(frame);
     }
 }
@@ -235,9 +244,24 @@ void CameraApp::on_frame_captured(const cv::Mat& frame)
 void CameraApp::on_frame_processed(const cv::Mat& frame)
 {
     if (display_->is_open()) {
-        std::lock_guard<std::mutex> lock(display_mutex_);
-        display_->display(frame);
+        // 用 try_lock：上一帧还没写完就跳过，避免阻塞采集线程
+        std::unique_lock<std::mutex> lock(display_mutex_, std::try_to_lock);
+        if (lock.owns_lock()) {
+            display_->display(frame);
+        }
     }
+}
+
+void CameraApp::handle_benchmark()
+{
+    if (!capture_) {
+        printf("请先打开摄像头 (输入 open)\n");
+        return;
+    }
+    bool now = !capture_->is_capture_only();
+    capture_->set_capture_only(now);
+    printf("[Benchmark] 纯采集模式: %s (只 DQBUF/QBUF，不解码不显示)\n",
+           now ? "开启" : "关闭");
 }
 
 void CameraApp::on_capture_error(const std::string& error)

@@ -90,7 +90,7 @@ void FrameBuffer::display(const cv::Mat& image)
     double scale_y = static_cast<double>(yres_) / image.rows;
     double scale = std::min(scale_x, scale_y);
 
-    cv::resize(image, resized, cv::Size(), scale, scale, cv::INTER_LINEAR);
+    cv::resize(image, resized, cv::Size(), scale, scale, cv::INTER_NEAREST);
 
     // 计算居中偏移
     int offset_x = (xres_ - resized.cols) / 2;

@@ -7,12 +7,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # 交叉编译时可通过 -DCMAKE_TOOLCHAIN_FILE 指定工具链
 # 例如: cmake -DCMAKE_TOOLCHAIN_FILE=toolchain-imx6ull.cmake ..
 
-# 查找 OpenCV
-find_package(OpenCV REQUIRED)
+# 精简版静态 OpenCV（直接指定路径，不走 find_package 避免配置文件问题）
+set(OCV_PREFIX ${CMAKE_SOURCE_DIR}/3rdparty/opencv)
+set(OCV_LIB   ${OCV_PREFIX}/lib)
+set(OCV_3RD   ${OCV_LIB}/opencv4/3rdparty)
 
 # 头文件目录
 include_directories(${PROJECT_SOURCE_DIR}/include)
-include_directories(${OpenCV_INCLUDE_DIRS})
+include_directories(${OCV_PREFIX}/include/opencv4)
 
 # 源文件
 set(SOURCES
@@ -28,11 +30,28 @@ set(SOURCES
 # 可执行文件
 add_executable(${PROJECT_NAME} ${SOURCES})
 
-# 链接库
-target_link_libraries(${PROJECT_NAME}
-    ${OpenCV_LIBS}
-    pthread
+# Cortex-A7 NEON 优化：启用 SIMD 自动向量化
+target_compile_options(${PROJECT_NAME} PRIVATE
+    -mcpu=cortex-a7
+    -mfpu=neon-vfpv4
+    -mfloat-abi=hard
+    -ftree-vectorize
+    -O3
 )
+
+# 静态链接精简 OpenCV，C++ 运行时也静态，只保留 libc/libpthread 动态
+target_link_libraries(${PROJECT_NAME}
+    -Wl,--start-group
+    ${OCV_LIB}/libopencv_imgcodecs.a
+    ${OCV_LIB}/libopencv_imgproc.a
+    ${OCV_LIB}/libopencv_core.a
+    ${OCV_3RD}/liblibjpeg-turbo.a
+    ${OCV_3RD}/liblibpng.a
+    ${OCV_3RD}/libzlib.a
+    -Wl,--end-group
+    pthread dl
+)
+target_link_options(${PROJECT_NAME} PRIVATE -static)
 
 # 安装规则
 install(TARGETS ${PROJECT_NAME} DESTINATION bin)

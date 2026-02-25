@@ -1,11 +1,13 @@
 #include "v4l2_device.h"
+#include "v4l2_compat.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
-#include <sys/mman.h>
+#include <sys/select.h>
 
 V4L2Device::V4L2Device(const std::string& device_path)
     : device_path_(device_path)
@@ -150,12 +152,20 @@ V4L2Device::Frame V4L2Device::dequeue_buffer()
 {
     Frame frame = {nullptr, 0, -1};
 
-    struct v4l2_buffer buffer;
-    memset(&buffer, 0, sizeof(buffer));
-    buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    buffer.memory = V4L2_MEMORY_MMAP;
+    // 用 select() 阻塞等待帧就绪，避免 DQBUF 在某些驱动上忙等
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(fd_, &fds);
+    struct timeval tv = {0, 100000};  // 100ms 超时
+    int r = select(fd_ + 1, &fds, nullptr, nullptr, &tv);
+    if (r <= 0) return frame;  // 超时或出错，返回空帧让调用方重试
 
-    if (ioctl(fd_, VIDIOC_DQBUF, &buffer) < 0) {
+    struct v4l2_buffer_compat buffer;
+    memset(&buffer, 0, sizeof(buffer));
+    buffer.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buffer.memory = V4L2_MEMORY_USERPTR;
+
+    if (ioctl(fd_, VIDIOC_DQBUF_COMPAT, &buffer) < 0) {
         return frame;
     }
 
@@ -167,13 +177,15 @@ V4L2Device::Frame V4L2Device::dequeue_buffer()
 
 int V4L2Device::enqueue_buffer(int index)
 {
-    struct v4l2_buffer buffer;
+    struct v4l2_buffer_compat buffer;
     memset(&buffer, 0, sizeof(buffer));
-    buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    buffer.memory = V4L2_MEMORY_MMAP;
-    buffer.index = index;
+    buffer.type      = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buffer.memory    = V4L2_MEMORY_USERPTR;
+    buffer.index     = index;
+    buffer.m.userptr = static_cast<__u32>(reinterpret_cast<uintptr_t>(user_buffers_[index]));
+    buffer.length    = static_cast<__u32>(buffer_lengths_[index]);
 
-    if (ioctl(fd_, VIDIOC_QBUF, &buffer) < 0) {
+    if (ioctl(fd_, VIDIOC_QBUF_COMPAT, &buffer) < 0) {
         perror("[V4L2Device] 归还缓冲区失败");
         return -1;
     }
@@ -244,24 +256,35 @@ int V4L2Device::set_format(int width, int height, uint32_t pixel_format)
     fmt.fmt.pix.width = width;
     fmt.fmt.pix.height = height;
     fmt.fmt.pix.pixelformat = pixel_format;
+    fmt.fmt.pix.field = V4L2_FIELD_ANY;
 
     if (ioctl(fd_, VIDIOC_S_FMT, &fmt) < 0) {
         perror("[V4L2Device] 设置视频格式失败");
         return -4;
     }
 
-    printf("[V4L2Device] 格式已设置: %dx%d\n",
-           fmt.fmt.pix.width, fmt.fmt.pix.height);
+    // 保存驱动实际返回的格式（可能与请求不同）
+    width_        = fmt.fmt.pix.width;
+    height_       = fmt.fmt.pix.height;
+    pixel_format_ = fmt.fmt.pix.pixelformat;
+    image_size_   = fmt.fmt.pix.sizeimage;
+    if (image_size_ == 0)
+        image_size_ = static_cast<size_t>(width_) * height_ * 2;
+
+    printf("[V4L2Device] 格式已设置: %dx%d fmt=0x%08X, 帧大小上限: %zu 字节\n",
+           width_, height_, pixel_format_, image_size_);
     return 0;
 }
 
 int V4L2Device::request_buffers()
 {
+    // 使用 USERPTR 模式：内核不分配内存，由用户自行 malloc
+    // 好处：无需 VIDIOC_QUERYBUF，避免内核头文件 struct 大小不一致导致的 ENOTTY
     struct v4l2_requestbuffers reqbuf;
     memset(&reqbuf, 0, sizeof(reqbuf));
-    reqbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    reqbuf.count = kBufferCount;
-    reqbuf.memory = V4L2_MEMORY_MMAP;
+    reqbuf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    reqbuf.count  = kBufferCount;
+    reqbuf.memory = V4L2_MEMORY_USERPTR;
 
     if (ioctl(fd_, VIDIOC_REQBUFS, &reqbuf) < 0) {
         perror("[V4L2Device] 申请缓冲区失败");
@@ -271,47 +294,41 @@ int V4L2Device::request_buffers()
     buffer_count_ = reqbuf.count;
 
     for (int i = 0; i < buffer_count_; ++i) {
-        struct v4l2_buffer buf;
-        memset(&buf, 0, sizeof(buf));
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_MMAP;
-        buf.index = i;
-        // 查询缓冲区信息
-        if (ioctl(fd_, VIDIOC_QUERYBUF, &buf) < 0) {
-            perror("[V4L2Device] 查询缓冲区失败");
-            release_buffers();
-            return -5;
-        }
-        // 映射缓冲区到用户空间
+        // 自行分配缓冲区，4096 字节对齐
         user_buffers_[i] = static_cast<char*>(
-            mmap(nullptr, buf.length, PROT_READ | PROT_WRITE,
-                 MAP_SHARED, fd_, buf.m.offset));
-        if (user_buffers_[i] == MAP_FAILED) {
-            perror("[V4L2Device] mmap失败");
-            user_buffers_[i] = nullptr;
+            aligned_alloc(4096, (image_size_ + 4095) & ~4095UL));
+        if (!user_buffers_[i]) {
+            perror("[V4L2Device] 分配缓冲区内存失败");
             release_buffers();
             return -5;
         }
-        buffer_lengths_[i] = buf.length;
+        buffer_lengths_[i] = static_cast<int>(image_size_);
 
-        // 将缓冲区加入内核队列
-        if (ioctl(fd_, VIDIOC_QBUF, &buf) < 0) {
+        // 将缓冲区入队
+        struct v4l2_buffer_compat buf;
+        memset(&buf, 0, sizeof(buf));
+        buf.type      = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory    = V4L2_MEMORY_USERPTR;
+        buf.index     = i;
+        buf.m.userptr = static_cast<__u32>(reinterpret_cast<uintptr_t>(user_buffers_[i]));
+        buf.length    = static_cast<__u32>(image_size_);
+
+        if (ioctl(fd_, VIDIOC_QBUF_COMPAT, &buf) < 0) {
             perror("[V4L2Device] 入队缓冲区失败");
             release_buffers();
             return -5;
         }
     }
 
-    printf("[V4L2Device] 已映射 %d 个缓冲区\n", buffer_count_);
+    printf("[V4L2Device] 已分配 %d 个缓冲区 (%zu 字节/帧)\n",
+           buffer_count_, image_size_);
     return 0;
 }
 
 void V4L2Device::release_buffers()
 {
     for (int i = 0; i < kBufferCount; ++i) {
-        if (user_buffers_[i] && user_buffers_[i] != MAP_FAILED) {
-            munmap(user_buffers_[i], buffer_lengths_[i]);
-        }
+        free(user_buffers_[i]);
         user_buffers_[i] = nullptr;
         buffer_lengths_[i] = 0;
     }
