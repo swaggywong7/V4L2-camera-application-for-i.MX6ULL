@@ -41,6 +41,7 @@ public:
 private:
     double low_threshold_;
     double high_threshold_;
+    cv::Mat gray_, edges_, output_;  // 复用，避免每帧 malloc
 };
 
 // 具体策略：灰度化
@@ -48,20 +49,29 @@ class GrayscaleAlgorithm : public ProcessAlgorithm {
 public:
     cv::Mat process(const cv::Mat& input) override;
     std::string name() const override { return "Grayscale"; }
+private:
+    cv::Mat gray_, output_;
 };
 
 // 具体策略：锐化
 class SharpenAlgorithm : public ProcessAlgorithm {
 public:
+    SharpenAlgorithm();
     cv::Mat process(const cv::Mat& input) override;
     std::string name() const override { return "Sharpen"; }
+private:
+    cv::Mat kernel_;  // 构造时初始化，不再每帧重建
 };
 
 // 具体策略：浮雕效果
 class EmbossAlgorithm : public ProcessAlgorithm {
 public:
+    EmbossAlgorithm();
     cv::Mat process(const cv::Mat& input) override;
     std::string name() const override { return "Emboss"; }
+private:
+    cv::Mat kernel_;
+    cv::Mat gray_, embossed_, output_;
 };
 
 // 具体策略：卡通化
@@ -69,6 +79,8 @@ class CartoonAlgorithm : public ProcessAlgorithm {
 public:
     cv::Mat process(const cv::Mat& input) override;
     std::string name() const override { return "Cartoon"; }
+private:
+    cv::Mat gray_, edges_, color_, output_;
 };
 
 // ==================== 处理模式枚举 ====================

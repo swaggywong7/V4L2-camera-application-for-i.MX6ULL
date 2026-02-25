@@ -86,6 +86,15 @@ int CameraApp::run()
                 catch (...) { printf("请输入有效数字，例如: view 0\n"); continue; }
             }
             handle_view_photo(idx);
+        } else if (line.substr(0, 3) == "res") {
+            int w = 640, h = 480;
+            if (line.size() > 4) {
+                try {
+                    w = std::stoi(line.substr(4));
+                    h = (w == 320) ? 240 : 480;
+                } catch (...) { printf("用法: res 320 或 res 640\n"); continue; }
+            }
+            handle_res(w, h);
         } else if (line == "benchmark" || line == "b") {
             handle_benchmark();
         } else if (line == "help" || line == "h") {
@@ -107,7 +116,14 @@ void CameraApp::handle_open()
         return;
     }
 
-    if (device_->open() < 0) {
+    // 优先尝试 YUYV：无需软件 JPEG 解码，CPU 效率最高
+    // 失败则降级到 MJPEG（兼容不支持 YUYV 的摄像头）
+    int ret = device_->open(cam_width_, cam_height_, V4L2_PIX_FMT_YUYV);
+    if (ret < 0) {
+        printf("[CameraApp] YUYV 不支持，降级到 MJPEG...\n");
+        ret = device_->open(cam_width_, cam_height_, V4L2_PIX_FMT_MJPEG);
+    }
+    if (ret < 0) {
         printf("打开摄像头失败!\n");
         return;
     }
@@ -243,13 +259,35 @@ void CameraApp::on_frame_captured(const cv::Mat& frame)
 
 void CameraApp::on_frame_processed(const cv::Mat& frame)
 {
-    if (display_->is_open()) {
-        // 用 try_lock：上一帧还没写完就跳过，避免阻塞采集线程
-        std::unique_lock<std::mutex> lock(display_mutex_, std::try_to_lock);
-        if (lock.owns_lock()) {
-            display_->display(frame);
-        }
+    if (!display_->is_open() || frame.empty()) return;
+
+    // 静止帧检测：对帧内容做快速哈希，相同则跳过 framebuffer 写入
+    // 采样：每隔 8 行取该行中央 3 个像素，计算滚动哈希
+    uint64_t h = 0;
+    for (int y = 0; y < frame.rows; y += 8) {
+        const uchar* p = frame.ptr(y) + (frame.cols / 2) * 3;
+        h = h * 6364136223846793005ULL
+            ^ (static_cast<uint64_t>(p[0]) | (static_cast<uint64_t>(p[1]) << 8)
+               | (static_cast<uint64_t>(p[2]) << 16));
     }
+    if (h == last_frame_hash_) return;  // 内容未变，跳过写入
+    last_frame_hash_ = h;
+
+    std::unique_lock<std::mutex> lock(display_mutex_, std::try_to_lock);
+    if (lock.owns_lock()) {
+        display_->display(frame);
+    }
+}
+
+void CameraApp::handle_res(int width, int height)
+{
+    if (device_->is_open()) {
+        printf("请先关闭摄像头再修改分辨率 (输入 close)\n");
+        return;
+    }
+    cam_width_  = width;
+    cam_height_ = height;
+    printf("[CameraApp] 分辨率已设置为 %dx%d，下次 open 时生效\n", width, height);
 }
 
 void CameraApp::handle_benchmark()
@@ -285,8 +323,10 @@ void CameraApp::print_help()
     printf("  close  (c)     - 关闭摄像头\n");
     printf("  capture(t)     - 拍照\n");
     printf("  mode <N>       - 设置处理模式 (0-6)\n");
+    printf("  res  <W>       - 设置分辨率 (320=320x240, 640=640x480)\n");
     printf("  list   (l)     - 查看相册\n");
     printf("  view <N>       - 查看第N张照片\n");
+    printf("  benchmark(b)  - 切换纯采集模式\n");
     printf("  help   (h)     - 显示帮助\n");
     printf("  quit   (q)     - 退出\n");
     printf("========================================\n");

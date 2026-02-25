@@ -36,6 +36,7 @@ private:
     void handle_list_photos();
     void handle_view_photo(int index);
     void handle_benchmark();
+    void handle_res(int width, int height);
     void print_help();
 
     // 回调：接收采集帧
@@ -55,7 +56,7 @@ private:
     std::unique_ptr<PhotoManager> photos_;
 
     std::atomic<bool> running_{false};
-    std::mutex display_mutex_;     // 保护显示操作的互斥锁
+    std::mutex display_mutex_;
 
     // 缓存最新帧用于拍照 (避免与采集线程竞争dequeue)
     std::mutex frame_cache_mutex_;
@@ -63,6 +64,13 @@ private:
 
     // 采集错误标志 (由采集线程设置，主循环检查并清理)
     std::atomic<bool> capture_error_{false};
+
+    // 打开摄像头时使用的分辨率（可由 res 命令修改）
+    int cam_width_  = V4L2Device::kDefaultWidth;
+    int cam_height_ = V4L2Device::kDefaultHeight;
+
+    // 静止帧检测：上一帧的快速哈希值，相同则跳过 framebuffer 写入
+    uint64_t last_frame_hash_ = 0;
 };
 
 #endif // CAMERA_APP_H
