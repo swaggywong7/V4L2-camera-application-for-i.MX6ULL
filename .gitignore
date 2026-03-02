@@ -2,3 +2,13 @@ build/
 *.o
 *.a
 *.so
+.cache/
+3rdparty/
+claude.md
+doc/
+面试文档*.md
+面试_*.md
+代码学习路线.md
+性能测试方案.md
+技术文档_重构说明.md
+测试结果.md
